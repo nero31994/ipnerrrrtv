@@ -3,8 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Shaka Player with ClearKey</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.2.0/shaka-player.min.js"></script>
+    <title>ClearKey DRM with DASH</title>
 </head>
 <body>
     <h1>Video Player with ClearKey DRM</h1>
@@ -13,28 +12,82 @@
     <video id="video" width="640" height="360" controls></video>
 
     <script>
-        // Hardcoded MPD URL and ClearKey details
-        const mpdUrl = 'https://qp-pldt-live-grp-03-prod.akamaized.net/out/u/cnn_rptv_prod_hd.mpd'; // Replace with your actual MPD URL
-        const clearKeys = {
-            '1917f4caf2364e6d9b1507326a85ead6': 'a1340a251a5aa63a9b0ea5d9d7f67595' // Replace with actual Key ID and Key in hex format
-        };
+        // Replace these with your actual MPD URL and ClearKey details
+        const mpdUrl = 'https://qp-pldt-live-grp-03-prod.akamaized.net/out/u/cnn_rptv_prod_hd.mpd'; // Replace with your DASH MPD URL
+        const keyId = '1917f4caf2364e6d9b1507326a85ead6'; // Replace with your ClearKey Key ID (Base64-encoded)
+        const key = 'a1340a251a5aa63a9b0ea5d9d7f67595'; // Replace with your ClearKey Key (Base64-encoded)
 
-        const video = document.getElementById('video');
-        const player = new shaka.Player(video);
+        // Function to initialize the video with ClearKey
+        async function initializePlayer() {
+            const video = document.getElementById('video');
 
-        // Configure Shaka Player to use ClearKey DRM
-        player.configure({
-            drm: {
-                clearKeys: clearKeys
+            // Step 1: Fetch the MPD file
+            const response = await fetch(mpdUrl);
+            if (!response.ok) {
+                console.error('Failed to fetch MPD file');
+                return;
             }
-        });
 
-        // Load the video
-        player.load(mpdUrl).then(() => {
-            console.log('The video has now been loaded!');
-        }).catch((e) => {
-            console.error('Error loading the video', e);
-            alert('Error loading the video. Check console for details.');
+            const mpdData = await response.text();
+
+            // Step 2: Parse the MPD and get media segments
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(mpdData, 'application/xml');
+
+            // Assuming a simple DASH structure for demonstration purposes
+            const initSegmentUrl = xmlDoc.querySelector('Initialization').getAttribute('sourceURL');
+            const mediaSegmentUrl = xmlDoc.querySelector('SegmentURL').getAttribute('media');
+
+            const mediaSource = new MediaSource();
+            video.src = URL.createObjectURL(mediaSource);
+
+            mediaSource.addEventListener('sourceopen', async () => {
+                const sourceBuffer = mediaSource.addSourceBuffer('video/mp4; codecs="avc1.64001e, mp4a.40.2"');
+
+                // Fetch and append initialization segment
+                const initSegment = await fetch(initSegmentUrl).then(res => res.arrayBuffer());
+                sourceBuffer.appendBuffer(initSegment);
+
+                // Fetch and append media segment
+                const mediaSegment = await fetch(mediaSegmentUrl).then(res => res.arrayBuffer());
+                sourceBuffer.appendBuffer(mediaSegment);
+
+                mediaSource.endOfStream();
+            });
+
+            // Step 3: Configure ClearKey DRM
+            const keySystem = 'org.w3.clearkey';
+            const keySystemConfig = {
+                initDataTypes: ['cenc'],
+                videoCapabilities: [{ contentType: 'video/mp4; codecs="avc1.64001e"' }]
+            };
+
+            const mediaKeys = await navigator.requestMediaKeySystemAccess(keySystem, [keySystemConfig])
+                .then(access => access.createMediaKeys());
+
+            await video.setMediaKeys(mediaKeys);
+
+            const session = mediaKeys.createSession();
+            session.addEventListener('message', event => {
+                const keyObject = {
+                    keys: [{
+                        kty: 'oct',
+                        kid: keyId,
+                        k: key
+                    }]
+                };
+
+                session.update(new TextEncoder().encode(JSON.stringify(keyObject)));
+            });
+
+            // Trigger an encrypted event
+            video.addEventListener('encrypted', event => {
+                session.generateRequest(event.initDataType, event.initData);
+            });
+        }
+
+        initializePlayer().catch(err => {
+            console.error('Error initializing player:', err);
         });
     </script>
 </body>
